@@ -1,0 +1,112 @@
+name: Build Slurm Debian Packages
+
+on:
+  push:
+    branches:
+      - '**'
+  schedule:
+    - cron: '0 2 * * *' # 10:00 UTC+8 daily
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-22.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool \
+            devscripts debhelper dh-exec fakeroot lintian dpkg-dev pkg-config \
+            curl ca-certificates wget xz-utils bzip2 git \
+            libmunge-dev libpam0g-dev libnuma-dev libhwloc-dev libbpf-dev libdbus-1-dev \
+            libhdf5-dev libibmad-dev libibumad-dev librdmacm-dev libibverbs-dev rdma-core \
+            default-libmysqlclient-dev \
+            libjson-c-dev libhttp-parser-dev libyaml-dev libjwt-dev \
+            libreadline-dev man2html \
+            libfreeipmi-dev libgtk2.0-dev libpmix-dev \
+            libnvidia-ml-dev || true
+          # Fallback for NVML headers on some Ubuntu images
+          sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit || true
+
+      - name: Discover latest Slurm version
+        id: slurm_ver
+        run: |
+          set -euo pipefail
+          URL_INDEX="https://download.schedmd.com/slurm/"
+          TARBALL=$(curl -fsSL "$URL_INDEX" | grep -oE 'slurm-[0-9]+\.[0-9]+\.[0-9]+\.tar\.(bz2|gz)' | sort -V | tail -n1)
+          if [ -z "$TARBALL" ]; then
+            echo "Failed to detect latest Slurm tarball" >&2
+            exit 1
+          fi
+          VERSION=$(echo "$TARBALL" | sed -E 's/slurm-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.(bz2|gz)/\1/')
+          TARBALL_URL="${URL_INDEX}${TARBALL}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Download source
+        run: |
+          curl -fSL "${{ steps.slurm_ver.outputs.tarball_url }}" -o "${{ steps.slurm_ver.outputs.tarball }}"
+          tar -xaf "${{ steps.slurm_ver.outputs.tarball }}"
+
+      - name: Prepare Debian build
+        working-directory: slurm-${{ steps.slurm_ver.outputs.version }}
+        run: |
+          # Ensure JWT is enabled for auth/slurm and slurmrestd where packaging uses configure flags
+          if [ -f debian/rules ]; then
+            if ! grep -q -- '--with-jwt' debian/rules; then
+              sed -i 's@--with\-sysconfdir=/etc/slurm@--with-sysconfdir=/etc/slurm --with-jwt@g' debian/rules || true
+            fi
+          fi
+
+      - name: Build Debian packages
+        working-directory: slurm-${{ steps.slurm_ver.outputs.version }}
+        run: |
+          export DEB_BUILD_OPTIONS="parallel=$(nproc)"
+          dpkg-buildpackage -us -uc -b
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          mv slurm-${{ steps.slurm_ver.outputs.version }}_*.deb artifacts/ || true
+          mv slurmctld_*.deb artifacts/ || true
+          mv slurmdbd_*.deb artifacts/ || true
+          mv slurmd_*.deb artifacts/ || true
+          mv slurmrestd_*.deb artifacts/ || true
+          mv slurm-client_*.deb artifacts/ || true
+          mv slurm-libpmi*_*.deb artifacts/ || true
+          mv slurm-dev_*.deb artifacts/ || true
+          mv *.changes artifacts/ || true
+          ls -al artifacts
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slurm-debs-${{ steps.slurm_ver.outputs.version }}
+          path: artifacts
+          if-no-files-found: error
+
+      - name: Create tag and release
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="v${{ steps.slurm_ver.outputs.version }}"
+          if ! git tag -l | grep -q "^${TAG}$"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Slurm $TAG"
+            git push origin "$TAG"
+          fi
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" artifacts/* --title "Slurm $TAG" --notes "Automated build of Slurm $TAG with requested components (acct_gather_energy/ipmi, acct_gather_interconnect/ofed, acct_gather_profile/hdf5, accounting_storage/mysql, auth/munge, auth/slurm, AutoDetect=nvml, PAM, task/affinity, task/cgroup, slurmrestd, HTML man pages). See Quick Start: https://slurm.schedmd.com/quickstart_admin.html"
