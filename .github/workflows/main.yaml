@@ -12,8 +12,48 @@ permissions:
   contents: write
 
 jobs:
-  build-deb:
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Discover latest three streams (latest tarballs)
+        id: pick
+        run: |
+          set -euo pipefail
+          URL_INDEX="https://download.schedmd.com/slurm/"
+          HTML=$(curl -fsSL "$URL_INDEX")
+          # Find streams like 25.05, 24.11, 24.05 from *-latest tarballs and pick top 3
+          STREAMS=$(echo "$HTML" \
+            | grep -oE 'slurm-[0-9]+\.[0-9]+-latest\.tar\.(bz2|gz)' \
+            | sed -E 's/^slurm-([0-9]+\.[0-9]+)-latest\.tar\.(bz2|gz)$/\1/' \
+            | sort -Vr | uniq | head -n3)
+          if [ -z "$STREAMS" ]; then
+            echo "No latest streams found" >&2
+            exit 1
+          fi
+          JSON="{\"include\":["
+          first=1
+          for S in $STREAMS; do
+            TARBALL="slurm-${S}-latest.tar.bz2"
+            URL="${URL_INDEX}${TARBALL}"
+            ITEM="{\\\"stream\\\":\\\"${S}\\\",\\\"tarball\\\":\\\"${TARBALL}\\\",\\\"url\\\":\\\"${URL}\\\"}"
+            if [ $first -eq 1 ]; then
+              JSON+="$ITEM"
+              first=0
+            else
+              JSON+=",$ITEM"
+            fi
+          done
+          JSON+="]}"
+          echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
+
+  build-deb:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
@@ -38,30 +78,24 @@ jobs:
           # Fallback for NVML headers on some Ubuntu images
           sudo apt-get install -y nvidia-cuda-toolkit || true
 
-      - name: Discover latest Slurm version
-        id: slurm_ver
+      - name: Set target stream variables
+        id: target
         run: |
-          set -euo pipefail
-          URL_INDEX="https://download.schedmd.com/slurm/"
-          TARBALL=$(curl -fsSL "$URL_INDEX" | grep -oE 'slurm-[0-9]+\.[0-9]+\.[0-9]+\.tar\.(bz2|gz)' | sort -V | tail -n1)
-          if [ -z "$TARBALL" ]; then
-            echo "Failed to detect latest Slurm tarball" >&2
-            exit 1
-          fi
-          VERSION=$(echo "$TARBALL" | sed -E 's/slurm-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.(bz2|gz)/\1/')
-          TARBALL_URL="${URL_INDEX}${TARBALL}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
+          echo "stream=${{ matrix.stream }}" >> "$GITHUB_OUTPUT"
+          echo "tarball=${{ matrix.tarball }}" >> "$GITHUB_OUTPUT"
+          echo "url=${{ matrix.url }}" >> "$GITHUB_OUTPUT"
 
       - name: Download source
         run: |
-          curl -fSL "${{ steps.slurm_ver.outputs.tarball_url }}" -o "${{ steps.slurm_ver.outputs.tarball }}"
-          tar -xaf "${{ steps.slurm_ver.outputs.tarball }}"
+          curl -fSL "${{ steps.target.outputs.url }}" -o "${{ steps.target.outputs.tarball }}"
+          # Determine top-level source directory name after extraction
+          SRCDIR=$(tar -tf "${{ steps.target.outputs.tarball }}" | head -1 | cut -d/ -f1)
+          echo "SRCDIR=$SRCDIR" >> "$GITHUB_ENV"
+          tar -xaf "${{ steps.target.outputs.tarball }}"
 
       - name: Prepare Debian build
-        working-directory: slurm-${{ steps.slurm_ver.outputs.version }}
         run: |
+          cd "$SRCDIR"
           # Ensure JWT is enabled for auth/slurm and slurmrestd where packaging uses configure flags
           if [ -f debian/rules ]; then
             if ! grep -q -- '--with-jwt' debian/rules; then
@@ -70,10 +104,26 @@ jobs:
           fi
 
       - name: Build Debian packages
-        working-directory: slurm-${{ steps.slurm_ver.outputs.version }}
         run: |
+          cd "$SRCDIR"
           export DEB_BUILD_OPTIONS="parallel=$(nproc)"
           dpkg-buildpackage -us -uc -b
+
+      - name: Resolve exact version
+        id: ver
+        run: |
+          cd "$SRCDIR"
+          # Prefer debian/changelog if available
+          if command -v dpkg-parsechangelog >/dev/null 2>&1 && [ -f debian/changelog ]; then
+            FULL_VER=$(dpkg-parsechangelog -S Version || true)
+          else
+            # Fallback: parse directory name slurm-X.Y.Z
+            FULL_VER=$(echo "$SRCDIR" | sed -E 's/^slurm-([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
+          fi
+          FULL_VER=${FULL_VER:-unknown}
+          # Strip Debian revision (-1) if present
+          EXACT_VER=$(echo "$FULL_VER" | sed -E 's/-.*$//')
+          echo "exact_version=$EXACT_VER" >> "$GITHUB_OUTPUT"
 
       - name: Collect artifacts
         run: |
@@ -83,8 +133,8 @@ jobs:
           echo "Run mkdir -p artifacts"
           mkdir -p artifacts
           shopt -s nullglob
-          echo "Run mv *.deb artifacts/"
-          mv *.deb artifacts/ || true
+          echo "Move generated debs (parent of source dir)"
+          mv ./*.deb artifacts/ || true
           echo "Run mv *.changes artifacts/"
           mv *.changes artifacts/ || true
           echo "Run ls -la artifacts"
@@ -93,7 +143,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: slurm-debs-${{ steps.slurm_ver.outputs.version }}
+          name: slurm-debs-${{ steps.ver.outputs.exact_version }}-${{ matrix.stream }}
           path: artifacts
           if-no-files-found: error
           overwrite: true
@@ -104,7 +154,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          TAG="v${{ steps.slurm_ver.outputs.version }}"
+          TAG="v${{ steps.ver.outputs.exact_version }}"
           git fetch --tags --quiet || true
           if git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists on remote. Skipping tag creation/push."
@@ -117,7 +167,10 @@ jobs:
             git push origin "$TAG"
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # Release exists: upload/overwrite assets
+            # Release exists: update metadata and upload/overwrite assets
+            gh release edit "$TAG" \
+              --title "Slurm $TAG" \
+              --notes "Automated build of Slurm $TAG with requested components (acct_gather_energy/ipmi, acct_gather_interconnect/ofed, acct_gather_profile/hdf5, accounting_storage/mysql, auth/munge, auth/slurm, AutoDetect=nvml, PAM, task/affinity, task/cgroup, slurmrestd, HTML man pages). See Quick Start: https://slurm.schedmd.com/quickstart_admin.html"
             gh release upload "$TAG" artifacts/* --clobber
           else
             gh release create "$TAG" artifacts/* --title "Slurm $TAG" --notes "Automated build of Slurm $TAG with requested components (acct_gather_energy/ipmi, acct_gather_interconnect/ofed, acct_gather_profile/hdf5, accounting_storage/mysql, auth/munge, auth/slurm, AutoDetect=nvml, PAM, task/affinity, task/cgroup, slurmrestd, HTML man pages). See Quick Start: https://slurm.schedmd.com/quickstart_admin.html"
