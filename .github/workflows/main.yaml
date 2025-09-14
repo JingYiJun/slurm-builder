@@ -77,14 +77,21 @@ jobs:
 
       - name: Collect artifacts
         run: |
-          ls .
-          ls ..
+          echo "Current directory: $(pwd)"
+          echo "Run ls -la ."
+          ls -la .
+          echo "Run ls -la .."
+          ls -la ..
+          echo "Run mkdir -p artifacts"
           mkdir -p artifacts
           shopt -s nullglob
           mv ../*.deb artifacts/ || true
+          echo "Run mv *.deb artifacts/"
           mv *.deb artifacts/ || true
+          echo "Run mv *.changes artifacts/"
           mv *.changes artifacts/ || true
-          ls -al artifacts
+          echo "Run ls -la artifacts"
+          ls -la artifacts
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -92,6 +99,7 @@ jobs:
           name: slurm-debs-${{ steps.slurm_ver.outputs.version }}
           path: artifacts
           if-no-files-found: error
+          overwrite: true
 
       - name: Create tag and release
         if: github.ref_type != 'tag'
