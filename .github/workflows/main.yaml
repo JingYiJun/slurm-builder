@@ -46,7 +46,12 @@ jobs:
             fi
           done
           JSON+="]}"
-          echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
+          echo "Generated matrix JSON: $JSON"
+          {
+            echo "matrix<<EOF"
+            echo "$JSON"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
   build-deb:
     needs: discover
