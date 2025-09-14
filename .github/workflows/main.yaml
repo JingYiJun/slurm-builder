@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-deb:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
@@ -23,7 +23,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y \
             build-essential autoconf automake libtool \
             devscripts debhelper dh-exec fakeroot lintian dpkg-dev pkg-config \
             curl ca-certificates wget xz-utils bzip2 git \
@@ -36,7 +36,7 @@ jobs:
             libnvidia-ml-dev \
             libipmimonitoring-dev liblua5.3-dev libperl-dev librdkafka-dev librrd-dev || true
           # Fallback for NVML headers on some Ubuntu images
-          sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit || true
+          sudo apt-get install -y nvidia-cuda-toolkit || true
 
       - name: Discover latest Slurm version
         id: slurm_ver
@@ -77,16 +77,12 @@ jobs:
 
       - name: Collect artifacts
         run: |
+          ls .
+          ls ..
           mkdir -p artifacts
           shopt -s nullglob
-          mv slurm-${{ steps.slurm_ver.outputs.version }}_*.deb artifacts/ || true
-          mv slurmctld_*.deb artifacts/ || true
-          mv slurmdbd_*.deb artifacts/ || true
-          mv slurmd_*.deb artifacts/ || true
-          mv slurmrestd_*.deb artifacts/ || true
-          mv slurm-client_*.deb artifacts/ || true
-          mv slurm-libpmi*_*.deb artifacts/ || true
-          mv slurm-dev_*.deb artifacts/ || true
+          mv ../*.deb artifacts/ || true
+          mv *.deb artifacts/ || true
           mv *.changes artifacts/ || true
           ls -al artifacts
 
