@@ -37,7 +37,7 @@ jobs:
           for S in $STREAMS; do
             TARBALL="slurm-${S}-latest.tar.bz2"
             URL="${URL_INDEX}${TARBALL}"
-            ITEM="{\\\"stream\\\":\\\"${S}\\\",\\\"tarball\\\":\\\"${TARBALL}\\\",\\\"url\\\":\\\"${URL}\\\"}"
+            ITEM="{\"stream\":\"${S}\",\"tarball\":\"${TARBALL}\",\"url\":\"${URL}\"}"
             if [ $first -eq 1 ]; then
               JSON+="$ITEM"
               first=0
