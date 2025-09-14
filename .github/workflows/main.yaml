@@ -108,10 +108,20 @@ jobs:
         run: |
           set -e
           TAG="v${{ steps.slurm_ver.outputs.version }}"
-          if ! git tag -l | grep -q "^${TAG}$"; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag -a "$TAG" -m "Slurm $TAG"
+          git fetch --tags --quiet || true
+          if git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists on remote. Skipping tag creation/push."
+          else
+            if ! git tag -l | grep -q "^${TAG}$"; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag -a "$TAG" -m "Slurm $TAG"
+            fi
             git push origin "$TAG"
           fi
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" artifacts/* --title "Slurm $TAG" --notes "Automated build of Slurm $TAG with requested components (acct_gather_energy/ipmi, acct_gather_interconnect/ofed, acct_gather_profile/hdf5, accounting_storage/mysql, auth/munge, auth/slurm, AutoDetect=nvml, PAM, task/affinity, task/cgroup, slurmrestd, HTML man pages). See Quick Start: https://slurm.schedmd.com/quickstart_admin.html"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Release exists: upload/overwrite assets
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" artifacts/* --title "Slurm $TAG" --notes "Automated build of Slurm $TAG with requested components (acct_gather_energy/ipmi, acct_gather_interconnect/ofed, acct_gather_profile/hdf5, accounting_storage/mysql, auth/munge, auth/slurm, AutoDetect=nvml, PAM, task/affinity, task/cgroup, slurmrestd, HTML man pages). See Quick Start: https://slurm.schedmd.com/quickstart_admin.html"
+          fi
