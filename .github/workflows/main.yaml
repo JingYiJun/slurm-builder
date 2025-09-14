@@ -80,12 +80,9 @@ jobs:
           echo "Current directory: $(pwd)"
           echo "Run ls -la ."
           ls -la .
-          echo "Run ls -la .."
-          ls -la ..
           echo "Run mkdir -p artifacts"
           mkdir -p artifacts
           shopt -s nullglob
-          mv ../*.deb artifacts/ || true
           echo "Run mv *.deb artifacts/"
           mv *.deb artifacts/ || true
           echo "Run mv *.changes artifacts/"
