@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-deb:
-    runs-on: ubuntu
+    runs-on: ubuntu-latest
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
